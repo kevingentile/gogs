@@ -309,33 +309,48 @@ func runWeb(c *cli.Context) error {
 			m.Get("/followers", user.Followers)
 			m.Get("/following", user.Following)
 			m.Get("/stars", user.Stars)
+
+			m.Group("/:reponame", func() {
+				m.Get("/attachments/:uuid", func(c *context.Context) {
+
+					mode, err := db.UserAccessMode(c.UserID(), c.Repo.Repository)
+					if err != nil {
+						c.NotFound()
+						return
+					}
+
+					if mode == db.ACCESS_MODE_NONE {
+						c.NotFound()
+						return
+					}
+
+					attach, err := db.GetAttachmentByUUID(c.Params(":uuid"))
+					if err != nil {
+						c.NotFoundOrServerError("GetAttachmentByUUID", db.IsErrAttachmentNotExist, err)
+						return
+					} else if !com.IsFile(attach.LocalPath()) {
+						c.NotFound()
+						return
+					}
+
+					fr, err := os.Open(attach.LocalPath())
+					if err != nil {
+						c.ServerError("open attachment file", err)
+						return
+					}
+					defer fr.Close()
+
+					c.Header().Set("Cache-Control", "public,max-age=86400")
+					c.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, attach.Name))
+
+					if _, err = io.Copy(c.Resp, fr); err != nil {
+						c.ServerError("copy from file to response", err)
+						return
+					}
+				})
+			}, context.RepoRef())
 		}, context.InjectParamsUser())
 
-		m.Get("/attachments/:uuid", func(c *context.Context) {
-			attach, err := db.GetAttachmentByUUID(c.Params(":uuid"))
-			if err != nil {
-				c.NotFoundOrServerError("GetAttachmentByUUID", db.IsErrAttachmentNotExist, err)
-				return
-			} else if !com.IsFile(attach.LocalPath()) {
-				c.NotFound()
-				return
-			}
-
-			fr, err := os.Open(attach.LocalPath())
-			if err != nil {
-				c.ServerError("open attachment file", err)
-				return
-			}
-			defer fr.Close()
-
-			c.Header().Set("Cache-Control", "public,max-age=86400")
-			c.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, attach.Name))
-
-			if _, err = io.Copy(c.Resp, fr); err != nil {
-				c.ServerError("copy from file to response", err)
-				return
-			}
-		})
 		m.Post("/issues/attachments", repo.UploadIssueAttachment)
 		m.Post("/releases/attachments", repo.UploadReleaseAttachment)
 	}, ignSignIn)
